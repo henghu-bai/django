@@ -4,13 +4,14 @@ from operator import attrgetter
 from .models import (
     Country, Person, Group, Membership, Friendship, Article,
     ArticleTranslation, ArticleTag, ArticleIdea, NewsArticle)
-from django.test import TestCase
+from django.test import TestCase, skipUnlessDBFeature
 from django.utils.translation import activate
 from django.core.exceptions import FieldError
 from django import forms
 
 # Note that these tests are testing internal implementation details.
 # ForeignObject is not part of public API.
+
 
 class MultiColumnFKTests(TestCase):
     def setUp(self):
@@ -132,13 +133,30 @@ class MultiColumnFKTests(TestCase):
             ],
             attrgetter('person_id')
         )
-
         self.assertQuerysetEqual(
             Membership.objects.filter(person__in=Person.objects.filter(name='Jim')), [
                 self.jim.id,
             ],
             attrgetter('person_id')
         )
+
+    def test_double_nested_query(self):
+        m1 = Membership.objects.create(membership_country_id=self.usa.id, person_id=self.bob.id,
+                                       group_id=self.cia.id)
+        m2 = Membership.objects.create(membership_country_id=self.usa.id, person_id=self.jim.id,
+                                       group_id=self.cia.id)
+        Friendship.objects.create(from_friend_country_id=self.usa.id, from_friend_id=self.bob.id,
+                                  to_friend_country_id=self.usa.id, to_friend_id=self.jim.id)
+        self.assertQuerysetEqual(Membership.objects.filter(
+            person__in=Person.objects.filter(
+                from_friend__in=Friendship.objects.filter(
+                    to_friend__in=Person.objects.all()))),
+            [m1], lambda x: x)
+        self.assertQuerysetEqual(Membership.objects.exclude(
+            person__in=Person.objects.filter(
+                from_friend__in=Friendship.objects.filter(
+                    to_friend__in=Person.objects.all()))),
+            [m2], lambda x: x)
 
     def test_select_related_foreignkey_forward_works(self):
         Membership.objects.create(membership_country=self.usa, person=self.bob, group=self.cia)
@@ -361,6 +379,13 @@ class MultiColumnFKTests(TestCase):
                 NewsArticle.objects.select_related(
                     'active_translation')[0].active_translation.title,
                 "foo")
+
+    @skipUnlessDBFeature('has_bulk_insert')
+    def test_batch_create_foreign_object(self):
+        """ See: https://code.djangoproject.com/ticket/21566 """
+        objs = [Person(name="abcd_%s" % i, person_country=self.usa) for i in range(0, 5)]
+        Person.objects.bulk_create(objs, 10)
+
 
 class FormsTests(TestCase):
     # ForeignObjects should not have any form fields, currently the user needs

@@ -33,7 +33,7 @@ database to use. It automatically defaults to ``'template_postgis'``
 ^^^^^^^^^^^^^^^^^^^
 
 When GeoDjango's spatial backend initializes on PostGIS, it has to perform
-a SQL query to determine the version in order to figure out what
+an SQL query to determine the version in order to figure out what
 features are available. Advanced users wishing to prevent this additional
 query may set the version manually using a 3-tuple of integers specifying
 the major, minor, and subminor version numbers for PostGIS. For example,
@@ -91,6 +91,15 @@ Create local PostgreSQL database
    ``/path/to/user/db``) to change the database port (e.g. ``port = 5433``).
 
 3. Start this database ``pg_ctl -D /path/to/user/db start``
+
+Create a database using PostGIS version 2
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+When testing projects using :ref:`PostGIS 2 <spatialdb_template91>`,
+the test database is created using the ``CREATE EXTENSION postgis``
+instruction, provided that no template ``template_postgis`` (or named
+accordingly to :setting:`POSTGIS_TEMPLATE`) exists in the current
+database.
 
 Windows
 -------

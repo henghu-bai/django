@@ -3,13 +3,16 @@ from __future__ import unicode_literals
 
 import unittest
 
+from django.conf.urls import patterns, url
+from django.core.urlresolvers import reverse
 from django.db import connection
 from django.forms import EmailField, IntegerField
 from django.http import HttpResponse
 from django.template.loader import render_to_string
 from django.test import SimpleTestCase, TestCase, skipIfDBFeature, skipUnlessDBFeature
 from django.test.html import HTMLParseError, parse_html
-from django.test.utils import CaptureQueriesContext, IgnoreAllDeprecationWarningsMixin
+from django.test.utils import (CaptureQueriesContext,
+    IgnoreAllDeprecationWarningsMixin, override_settings)
 from django.utils import six
 
 from .models import Person
@@ -56,9 +59,7 @@ class AssertNumQueriesTests(TestCase):
         def test_func():
             raise ValueError
 
-        self.assertRaises(ValueError,
-            self.assertNumQueries, 2, test_func
-        )
+        self.assertRaises(ValueError, self.assertNumQueries, 2, test_func)
 
     def test_assert_num_queries_with_client(self):
         person = Person.objects.create(name='test')
@@ -194,6 +195,7 @@ class AssertNumQueriesContextManagerTests(TestCase):
             with self.assertNumQueries(2):
                 Person.objects.count()
         self.assertIn("1 queries executed, 2 expected", str(exc_info.exception))
+        self.assertIn("Captured queries were", str(exc_info.exception))
 
         with self.assertRaises(TypeError):
             with self.assertNumQueries(4000):
@@ -214,6 +216,8 @@ class AssertNumQueriesContextManagerTests(TestCase):
 
 
 class AssertTemplateUsedContextManagerTests(TestCase):
+    urls = 'test_utils.urls'
+
     def test_usage(self):
         with self.assertTemplateUsed('template_used/base.html'):
             render_to_string('template_used/base.html')
@@ -270,6 +274,11 @@ class AssertTemplateUsedContextManagerTests(TestCase):
             with self.assertTemplateUsed('template_used/base.html'):
                 render_to_string('template_used/alternative.html')
 
+        with self.assertRaises(AssertionError) as cm:
+            response = self.client.get('/test_utils/no_template_used/')
+            self.assertTemplateUsed(response, 'template_used/base.html')
+        self.assertEqual(cm.exception.args[0], "No templates used to render the response")
+
     def test_failure(self):
         with self.assertRaises(TypeError):
             with self.assertTemplateUsed():
@@ -307,7 +316,7 @@ class HTMLEqualTests(TestCase):
         self.assertEqual(dom[0], 'foo')
 
     def test_parse_html_in_script(self):
-        parse_html('<script>var a = "<p" + ">";</script>');
+        parse_html('<script>var a = "<p" + ">";</script>')
         parse_html('''
             <script>
             var js_sha_link='<p>***</p>';
@@ -322,7 +331,7 @@ class HTMLEqualTests(TestCase):
         self.assertEqual(dom.children[0], "<p>foo</p> '</scr'+'ipt>' <span>bar</span>")
 
     def test_self_closing_tags(self):
-        self_closing_tags = ('br' , 'hr', 'input', 'img', 'meta', 'spacer',
+        self_closing_tags = ('br', 'hr', 'input', 'img', 'meta', 'spacer',
             'link', 'frame', 'base', 'col')
         for tag in self_closing_tags:
             dom = parse_html('<p>Hello <%s> world</p>' % tag)
@@ -397,13 +406,13 @@ class HTMLEqualTests(TestCase):
 
     def test_complex_examples(self):
         self.assertHTMLEqual(
-        """<tr><th><label for="id_first_name">First name:</label></th>
+            """<tr><th><label for="id_first_name">First name:</label></th>
 <td><input type="text" name="first_name" value="John" id="id_first_name" /></td></tr>
 <tr><th><label for="id_last_name">Last name:</label></th>
 <td><input type="text" id="id_last_name" name="last_name" value="Lennon" /></td></tr>
 <tr><th><label for="id_birthday">Birthday:</label></th>
 <td><input type="text" value="1940-10-9" name="birthday" id="id_birthday" /></td></tr>""",
-        """
+            """
         <tr><th>
             <label for="id_first_name">First name:</label></th><td><input type="text" name="first_name" value="John" id="id_first_name" />
         </td></tr>
@@ -416,7 +425,7 @@ class HTMLEqualTests(TestCase):
         """)
 
         self.assertHTMLEqual(
-        """<!DOCTYPE html>
+            """<!DOCTYPE html>
         <html>
         <head>
             <link rel="stylesheet">
@@ -621,3 +630,32 @@ class DoctestNormalizerTest(IgnoreAllDeprecationWarningsMixin, SimpleTestCase):
         suite = make_doctest("test_utils.doctest_output")
         failures = unittest.TextTestRunner(stream=six.StringIO()).run(suite)
         self.assertEqual(failures.failures, [])
+
+
+# for OverrideSettingsTests
+def fake_view(request):
+    pass
+
+
+class FirstUrls:
+    urlpatterns = patterns('', url(r'first/$', fake_view, name='first'))
+
+
+class SecondUrls:
+    urlpatterns = patterns('', url(r'second/$', fake_view, name='second'))
+
+
+class OverrideSettingsTests(TestCase):
+    """
+    #21518 -- If neither override_settings nor a settings_changed receiver
+    clears the URL cache between tests, then one of these two test methods will
+    fail.
+    """
+
+    @override_settings(ROOT_URLCONF=FirstUrls)
+    def test_first(self):
+        reverse('first')
+
+    @override_settings(ROOT_URLCONF=SecondUrls)
+    def test_second(self):
+        reverse('second')

@@ -1,13 +1,11 @@
+from importlib import import_module
 import itertools
 import os
 import re
-try:
-    from urllib.parse import urlparse, ParseResult
-except ImportError:     # Python 2
-    from urlparse import urlparse, ParseResult
 
+from django.apps import apps
 from django.conf import global_settings, settings
-from django.contrib.sites.models import Site, RequestSite
+from django.contrib.sites.requests import RequestSite
 from django.contrib.admin.models import LogEntry
 from django.contrib.auth.models import User
 from django.core import mail
@@ -15,15 +13,19 @@ from django.core.urlresolvers import reverse, NoReverseMatch
 from django.http import QueryDict, HttpRequest
 from django.utils.encoding import force_text
 from django.utils.http import urlquote
+from django.utils.six.moves.urllib.parse import urlparse, ParseResult
+from django.utils.translation import LANGUAGE_SESSION_KEY
 from django.utils._os import upath
-from django.test import TestCase
-from django.test.utils import override_settings, patch_logger
+from django.test import TestCase, override_settings
+from django.test.utils import patch_logger
 from django.middleware.csrf import CsrfViewMiddleware
 from django.contrib.sessions.middleware import SessionMiddleware
 
 from django.contrib.auth import SESSION_KEY, REDIRECT_FIELD_NAME
 from django.contrib.auth.forms import (AuthenticationForm, PasswordChangeForm,
                 SetPasswordForm)
+# Needed so model is installed when tests are run independently:
+from django.contrib.auth.tests.custom_user import CustomUser  # NOQA
 from django.contrib.auth.tests.utils import skipIfCustomUser
 from django.contrib.auth.views import login as login_view
 
@@ -51,7 +53,7 @@ class AuthViewsTestCase(TestCase):
         response = self.client.post('/login/', {
             'username': 'testclient',
             'password': password,
-            })
+        })
         self.assertTrue(SESSION_KEY in self.client.session)
         return response
 
@@ -179,10 +181,11 @@ class PasswordResetTest(AuthViewsTestCase):
         # HTTP_HOST header isn't poisoned. This is done as a check when get_host()
         # is invoked, but we check here as a practical consequence.
         with patch_logger('django.security.DisallowedHost', 'error') as logger_calls:
-            response = self.client.post('/password_reset/',
-                    {'email': 'staffmember@example.com'},
-                    HTTP_HOST='www.example:dr.frankenstein@evil.tld'
-                )
+            response = self.client.post(
+                '/password_reset/',
+                {'email': 'staffmember@example.com'},
+                HTTP_HOST='www.example:dr.frankenstein@evil.tld'
+            )
             self.assertEqual(response.status_code, 400)
             self.assertEqual(len(mail.outbox), 0)
             self.assertEqual(len(logger_calls), 1)
@@ -192,14 +195,14 @@ class PasswordResetTest(AuthViewsTestCase):
     def test_poisoned_http_host_admin_site(self):
         "Poisoned HTTP_HOST headers can't be used for reset emails on admin views"
         with patch_logger('django.security.DisallowedHost', 'error') as logger_calls:
-            response = self.client.post('/admin_password_reset/',
-                    {'email': 'staffmember@example.com'},
-                    HTTP_HOST='www.example:dr.frankenstein@evil.tld'
-                )
+            response = self.client.post(
+                '/admin_password_reset/',
+                {'email': 'staffmember@example.com'},
+                HTTP_HOST='www.example:dr.frankenstein@evil.tld'
+            )
             self.assertEqual(response.status_code, 400)
             self.assertEqual(len(mail.outbox), 0)
             self.assertEqual(len(logger_calls), 1)
-
 
     def _test_confirm_start(self):
         # Start by creating the email
@@ -310,6 +313,22 @@ class PasswordResetTest(AuthViewsTestCase):
         self.assertEqual(response.status_code, 302)
         self.assertURLEqual(response.url, '/password_reset/')
 
+    def test_confirm_display_user_from_form(self):
+        url, path = self._test_confirm_start()
+        response = self.client.get(path)
+
+        # #16919 -- The ``password_reset_confirm`` view should pass the user
+        # object to the ``SetPasswordForm``, even on GET requests.
+        # For this test, we render ``{{ form.user }}`` in the template
+        # ``registration/password_reset_confirm.html`` so that we can test this.
+        username = User.objects.get(email='staffmember@example.com').username
+        self.assertContains(response, "Hello, %s." % username)
+
+        # However, the view should NOT pass any user object on a form if the
+        # password reset link was invalid.
+        response = self.client.get('/reset/zzzzzzzzzzzzz/1-1/')
+        self.assertContains(response, "Hello, .")
+
 
 @override_settings(AUTH_USER_MODEL='auth.CustomUser')
 class CustomUserPasswordResetTest(AuthViewsTestCase):
@@ -343,8 +362,8 @@ class ChangePasswordTest(AuthViewsTestCase):
             'password': password,
         })
         self.assertFormError(response, AuthenticationForm.error_messages['invalid_login'] % {
-                'username': User._meta.get_field('username').verbose_name
-            })
+            'username': User._meta.get_field('username').verbose_name
+        })
 
     def logout(self):
         self.client.get('/logout/')
@@ -430,7 +449,8 @@ class LoginTest(AuthViewsTestCase):
     def test_current_site_in_context_after_login(self):
         response = self.client.get(reverse('login'))
         self.assertEqual(response.status_code, 200)
-        if Site._meta.installed:
+        if apps.is_installed('django.contrib.sites'):
+            Site = apps.get_model('sites.Site')
             site = Site.objects.get_current()
             self.assertEqual(response.context['site'], site)
             self.assertEqual(response.context['site_name'], site.name)
@@ -446,7 +466,8 @@ class LoginTest(AuthViewsTestCase):
         for bad_url in ('http://example.com',
                         'https://example.com',
                         'ftp://exampel.com',
-                        '//example.com'):
+                        '//example.com',
+                        'javascript:alert("XSS")'):
 
             nasty_url = '%(url)s?%(next)s=%(bad_url)s' % {
                 'url': login_url,
@@ -467,6 +488,7 @@ class LoginTest(AuthViewsTestCase):
                          '/view?param=ftp://exampel.com',
                          'view/?param=//example.com',
                          'https:///',
+                         'HTTPS:///',
                          '//testserver/',
                          '/url%20with%20spaces/'):  # see ticket #12534
             safe_url = '%(url)s?%(next)s=%(good_url)s' % {
@@ -475,8 +497,8 @@ class LoginTest(AuthViewsTestCase):
                 'good_url': urlquote(good_url),
             }
             response = self.client.post(safe_url, {
-                    'username': 'testclient',
-                    'password': password,
+                'username': 'testclient',
+                'password': password,
             })
             self.assertEqual(response.status_code, 302)
             self.assertTrue(good_url in response.url,
@@ -510,14 +532,12 @@ class LoginTest(AuthViewsTestCase):
         req.COOKIES[settings.CSRF_COOKIE_NAME] = token1
         req.method = "POST"
         req.POST = {'username': 'testclient', 'password': password, 'csrfmiddlewaretoken': token1}
-        req.REQUEST = req.POST
 
         # Use POST request to log in
         SessionMiddleware().process_request(req)
         CsrfViewMiddleware().process_view(req, login_view, (), {})
         req.META["SERVER_NAME"] = "testserver"  # Required to have redirect work in login view
         req.META["SERVER_PORT"] = 80
-        req.META["CSRF_COOKIE_USED"] = True
         resp = login_view(req)
         resp2 = CsrfViewMiddleware().process_response(req, resp)
         csrf_cookie = resp2.cookies.get(settings.CSRF_COOKIE_NAME, None)
@@ -661,7 +681,8 @@ class LogoutTest(AuthViewsTestCase):
         for bad_url in ('http://example.com',
                         'https://example.com',
                         'ftp://exampel.com',
-                        '//example.com'):
+                        '//example.com',
+                        'javascript:alert("XSS")'):
             nasty_url = '%(url)s?%(next)s=%(bad_url)s' % {
                 'url': logout_url,
                 'next': REDIRECT_FIELD_NAME,
@@ -680,6 +701,7 @@ class LogoutTest(AuthViewsTestCase):
                          '/view?param=ftp://exampel.com',
                          'view/?param=//example.com',
                          'https:///',
+                         'HTTPS:///',
                          '//testserver/',
                          '/url%20with%20spaces/'):  # see ticket #12534
             safe_url = '%(url)s?%(next)s=%(good_url)s' % {
@@ -693,6 +715,19 @@ class LogoutTest(AuthViewsTestCase):
             self.assertTrue(good_url in response.url,
                             "%s should be allowed" % good_url)
             self.confirm_logged_out()
+
+    def test_logout_preserve_language(self):
+        """Check that language stored in session is preserved after logout"""
+        # Create a new session with language
+        engine = import_module(settings.SESSION_ENGINE)
+        session = engine.SessionStore()
+        session[LANGUAGE_SESSION_KEY] = 'pl'
+        session.save()
+        self.client.cookies[settings.SESSION_COOKIE_NAME] = session.session_key
+
+        self.client.get('/logout/')
+        self.assertEqual(self.client.session[LANGUAGE_SESSION_KEY], 'pl')
+
 
 @skipIfCustomUser
 @override_settings(
