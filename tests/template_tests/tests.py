@@ -431,20 +431,6 @@ class TemplateRegressionTests(TestCase):
             self.assertTrue(depth > 5,
                 "The traceback context was lost when reraising the traceback. See #19827")
 
-    def test_url_explicit_exception_for_old_syntax_at_run_time(self):
-        # Regression test for #19280
-        t = Template('{% url path.to.view %}')      # not quoted = old syntax
-        c = Context()
-        with six.assertRaisesRegex(self, urlresolvers.NoReverseMatch,
-                "The syntax changed in Django 1.5, see the docs."):
-            t.render(c)
-
-    def test_url_explicit_exception_for_old_syntax_at_compile_time(self):
-        # Regression test for #19392
-        with six.assertRaisesRegex(self, template.TemplateSyntaxError,
-                "The syntax of 'url' changed in Django 1.5, see the docs."):
-            Template('{% url my-view %}')      # not a variable = old syntax
-
     @override_settings(DEBUG=True, TEMPLATE_DEBUG=True)
     def test_no_wrapped_exception(self):
         """
@@ -621,7 +607,10 @@ class TemplateTests(TestCase):
                                     failures.append("Template test (Cached='%s', TEMPLATE_STRING_IF_INVALID='%s', TEMPLATE_DEBUG=%s): %s -- FAILED. Template loading invoked method that shouldn't have been invoked." % (is_cached, invalid_str, template_debug, name))
 
                                 try:
-                                    output = self.render(test_template, vals)
+                                    with warnings.catch_warnings():
+                                        # Ignore deprecation of fix_ampersands
+                                        warnings.filterwarnings("ignore", category=DeprecationWarning, module='django.template.defaultfilters')
+                                        output = self.render(test_template, vals)
                                 except ShouldNotExecuteException:
                                     failures.append("Template test (Cached='%s', TEMPLATE_STRING_IF_INVALID='%s', TEMPLATE_DEBUG=%s): %s -- FAILED. Template rendering invoked method that shouldn't have been invoked." % (is_cached, invalid_str, template_debug, name))
                             except ContextStackException:
